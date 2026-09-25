@@ -9,9 +9,8 @@
 </p>
 
 <p align="center">
-  <strong>English.</strong> Out-of-tree <strong>ext4</strong> filesystem → <strong><code>ext4.cctk</code></strong> for the Cact filesystem-module loader (<code>fs_mod</code>).<br>
-  <strong>Русский.</strong> Вынесенная из ядра файловая система <strong>ext4</strong> → <strong><code>ext4.cctk</code></strong>.<br>
-  Загружается ядром при старте до <code>mntfs_init</code> и монтирует корневую ext4 через <code>fs_mount(dev)</code>.
+  Out-of-tree <strong>ext4</strong> filesystem → <strong><code>ext4.cctk</code></strong> for the Cact filesystem-module loader (<code>fs_mod</code>).<br>
+  Loaded by the kernel at boot before <code>mntfs_init</code>; mounts the root ext4 through <code>fs_mount(dev)</code>.
 </p>
 
 ---
@@ -21,17 +20,19 @@
 **Recommended — full workspace**
 
 ```sh
-make -C CactOS-x86_32 iso
+ninja -C CactOS-x86_32/build-meson iso
 ```
 
 **Standalone**
 
 ```sh
-make install   # auto-detects ../CactKernel-x86_32 and ../LocalRepoCactOS
-make clean
+meson setup build-meson --cross-file cross/i686-cact-clang.ini
+ninja -C build-meson          # → build-meson/ext4.cctk
+ninja -C build-meson stage    # copy into ../LocalRepoCactOS-x86_32/lib/
+ninja -C build-meson clean
 ```
 
-Override paths if needed: `make KERN_ROOT=/custom/path LOCAL_REPO=/custom/path install`.
+Override paths if needed: `meson configure build-meson -Dkern_root=/custom/path -Dlocal_repo=/custom/path`.
 
 ---
 
@@ -49,7 +50,7 @@ Override paths if needed: `make KERN_ROOT=/custom/path LOCAL_REPO=/custom/path i
 The kernel calls two exported symbols:
 
 ```c
-vfs_node_t *fs_mount(uint32_t dev);   // mount device `dev`, return root node or NULL
+vfs_node_t *fs_mount(struct blkdev *dev);   // mount device `dev`, return root node or NULL
 int         fs_unmount(void);          // teardown (currently a no-op)
 ```
 
