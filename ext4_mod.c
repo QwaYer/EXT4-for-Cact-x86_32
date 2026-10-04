@@ -11,6 +11,7 @@
 #include "ext4_internal.h"
 #include "ext4.h"
 #include "blkdev.h"
+#include "vfs.h"
 
 /* Exported generic filesystem-module entry: mount block device `dev`. */
 vfs_node_t *fs_mount(struct blkdev *dev) {
@@ -19,5 +20,7 @@ vfs_node_t *fs_mount(struct blkdev *dev) {
 
 /* Exported generic filesystem-module entry: teardown. */
 int fs_unmount(void) {
+    /* Write the page cache back to disk before the volume goes away. */
+    vfs_as_flush_all();
     return 0;
 }

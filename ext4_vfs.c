@@ -10,6 +10,14 @@
 // Forward declaration: populate a VFS node from an inode number and file type
 static void ext4_make_node(struct ext4_ctx* ctx, vfs_node_t* n, uint32_t ino, uint8_t ft);
 
+// Generic-address-space glue for regular files (backing callbacks + ops).
+static int ext4_back_read (void* owner, uint32_t ino, uint32_t off, uint32_t size, char* buf);
+static int ext4_back_write(void* owner, uint32_t ino, uint32_t off, uint32_t size, char* buf);
+static int ext4_ops_read  (vfs_node_t* node, uint32_t off, uint32_t size, char* buf);
+static int ext4_ops_write (vfs_node_t* node, uint32_t off, uint32_t size, char* buf);
+static int ext4_ops_mmap_backing(vfs_node_t* node, uint32_t off, uint32_t len,
+                                 int* backing, uint32_t* obj_off);
+
 
 // ── readdir callback context 
 typedef struct {
@@ -67,11 +75,13 @@ static vfs_ops_t ext4_dir_ops = {
     .delete  = ext4_ops_delete,
 };
 
-// VFS operations for regular files
+// VFS operations for regular files (routed through the generic inode address
+// space so read()/write() and MAP_SHARED mmap share one page cache).
 static vfs_ops_t ext4_file_ops = {
-    .read   = ext4_read_file,
-    .write  = ext4_write_file,
-    .delete = ext4_ops_delete,
+    .read         = ext4_ops_read,
+    .write        = ext4_ops_write,
+    .delete       = ext4_ops_delete,
+    .mmap_backing = ext4_ops_mmap_backing,
 };
 
 // Populate a VFS node with inode metadata and the correct ops table
@@ -228,6 +238,52 @@ int ext4_write_file(vfs_node_t* node, uint32_t offset, uint32_t size, char* buff
     ext4_write_inode(ctx, node->inode, &inode);
     ext4_journal_stop(ctx);
     return (int)written;
+}
+
+// ── Generic address-space backing ───────────────────────────────────────
+// The raw disk I/O below is reused as the page cache's backing store: the
+// address space cold-populates pages from it and writes through to it.
+
+static int ext4_back_read(void* owner, uint32_t ino, uint32_t off, uint32_t size, char* buf) {
+    vfs_node_t tmp;
+    memory_set(&tmp, 0, sizeof(tmp));
+    tmp.priv  = owner;
+    tmp.inode = ino;
+    return ext4_read_file(&tmp, off, size, buf);
+}
+
+static int ext4_back_write(void* owner, uint32_t ino, uint32_t off, uint32_t size, char* buf) {
+    vfs_node_t tmp;
+    memory_set(&tmp, 0, sizeof(tmp));
+    tmp.priv  = owner;
+    tmp.inode = ino;
+    return ext4_write_file(&tmp, off, size, buf);
+}
+
+static void ext4_as_prepare(vfs_node_t* node) {
+    vfs_as_set_backing(node->priv, node->inode, (void*)ext4_back_read, (void*)ext4_back_write);
+    vfs_as_setsize(node->priv, node->inode, node->size);
+}
+
+static int ext4_ops_read(vfs_node_t* node, uint32_t off, uint32_t size, char* buf) {
+    ext4_as_prepare(node);
+    return vfs_as_read(node->priv, node->inode, off, size, buf);
+}
+
+static int ext4_ops_write(vfs_node_t* node, uint32_t off, uint32_t size, char* buf) {
+    ext4_as_prepare(node);
+    int w = vfs_as_write(node->priv, node->inode, off, size, buf);
+    if (w > 0) {
+        int s = vfs_as_size(node->priv, node->inode);
+        if (s >= 0) node->size = (uint32_t)s;
+    }
+    return w;
+}
+
+static int ext4_ops_mmap_backing(vfs_node_t* node, uint32_t off, uint32_t len,
+                                 int* backing, uint32_t* obj_off) {
+    ext4_as_prepare(node);
+    return vfs_as_backing(node->priv, node->inode, off, len, backing, obj_off);
 }
 
 // Create a regular file in a directory
