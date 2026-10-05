@@ -41,7 +41,7 @@ Override paths if needed: `meson configure build-meson -Dkern_root=/custom/path 
 | Output | Where it goes | Purpose |
 |--------|---------------|---------|
 | **`ext4.cctk`** | derived here | Relocatable ELF (ET_REL) loaded by the kernel's `fs_mod` loader |
-| installed **`lib/ext4.cctk`** | `$(LOCAL_REPO)/lib/` | Packed into **cctkfs.img** and loaded at boot |
+| installed **`lib/ext4.cctk`** | `$(LOCAL_REPO)/lib/` | Packed into **cctkfs.img** (archive loaded at boot; the module is loaded on demand) |
 
 ---
 
