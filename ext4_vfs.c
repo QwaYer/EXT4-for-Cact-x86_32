@@ -63,6 +63,8 @@ static int         ext4_ops_create(vfs_node_t* d, const char* n) { return ext4_c
 static int         ext4_ops_delete(vfs_node_t* d, const char* n) { return ext4_delete(d, (char*)n); }
 static int         ext4_ops_mkdir (vfs_node_t* d, const char* n) { return ext4_mkdir(d, (char*)n); }
 static int         ext4_ops_rmdir (vfs_node_t* d, const char* n) { return ext4_rmdir(d, (char*)n); }
+static int         ext4_ops_rename2(vfs_node_t* od, const char* on,
+                                    vfs_node_t* nd, const char* nn);
 
 // VFS operations for directories
 static vfs_ops_t ext4_dir_ops = {
@@ -73,6 +75,7 @@ static vfs_ops_t ext4_dir_ops = {
     .rmdir   = ext4_ops_rmdir,
     .create  = ext4_ops_create,
     .delete  = ext4_ops_delete,
+    .rename2 = ext4_ops_rename2,
 };
 
 // VFS operations for regular files (routed through the generic inode address
@@ -460,6 +463,73 @@ int ext4_rmdir(vfs_node_t* node, char* name) {
     ext4_read_inode(ctx, node->inode, &pi);
     if (pi.i_links_count > 1) pi.i_links_count--;
     ext4_write_inode(ctx, node->inode, &pi);
+
+    ext4_journal_stop(ctx);
+    return 0;
+}
+
+// Cross-directory rename (files and directories) within one filesystem.  A
+// moved directory gets its ".." retargeted and the two parents' link counts
+// adjusted (a subdirectory counts in its parent's i_links_count).
+static int ext4_ops_rename2(vfs_node_t* olddir, const char* oldname,
+                            vfs_node_t* newdir, const char* newname) {
+    if (!olddir || !newdir) return -1;
+    struct ext4_ctx* ctx = (struct ext4_ctx*)olddir->priv;
+    if (!ctx || ctx != (struct ext4_ctx*)newdir->priv) return -1; // same fs only
+
+    ext4_journal_start(ctx);
+
+    vfs_node_t* src = ext4_finddir(olddir, (char*)oldname);
+    if (!src) { ext4_journal_stop(ctx); return -1; }
+    uint32_t ino   = src->inode;
+    int      isdir = (src->type == VFS_DIRECTORY);
+    kfree(src);
+
+    if (ext4_finddir(newdir, (char*)newname)) { ext4_journal_stop(ctx); return -1; }
+
+    uint8_t ft = isdir ? EXT4_FT_DIR : EXT4_FT_REG_FILE;
+    if (ext4_dir_add(ctx, newdir, ino, newname, ft) < 0) {
+        ext4_journal_stop(ctx);
+        return -1;
+    }
+
+    uint32_t del_ino = 0;
+    uint8_t  del_ft  = 0;
+    if (ext4_dir_remove(ctx, olddir, oldname, &del_ino, &del_ft) < 0 || del_ino != ino) {
+        ext4_dir_remove(ctx, newdir, newname, &del_ino, &del_ft); // roll back
+        ext4_journal_stop(ctx);
+        return -1;
+    }
+
+    if (isdir) {
+        // Retarget the moved directory's ".." (second entry, after ".").
+        struct ext4_inode ci;
+        ext4_read_inode(ctx, ino, &ci);
+        uint32_t db = ext4_extent_pblock(&ci, 0);
+        if (db) {
+            uint8_t* buf = (uint8_t*)kmalloc(ctx->block_size);
+            if (buf) {
+                ext4_read_block(ctx, db, buf);
+                struct ext4_dir_entry_2* dot = (struct ext4_dir_entry_2*)buf;
+                struct ext4_dir_entry_2* dd  =
+                    (struct ext4_dir_entry_2*)(buf + (dot->rec_len ? dot->rec_len : 12));
+                if (dd->name_len == 2 && dd->name[0] == '.' && dd->name[1] == '.')
+                    dd->inode = newdir->inode;
+                ext4_write_block(ctx, db, buf);
+                kfree(buf);
+            }
+        }
+        // old parent loses a subdirectory, new parent gains one.
+        struct ext4_inode oi;
+        ext4_read_inode(ctx, olddir->inode, &oi);
+        if (oi.i_links_count > 1) oi.i_links_count--;
+        ext4_write_inode(ctx, olddir->inode, &oi);
+
+        struct ext4_inode ni;
+        ext4_read_inode(ctx, newdir->inode, &ni);
+        ni.i_links_count++;
+        ext4_write_inode(ctx, newdir->inode, &ni);
+    }
 
     ext4_journal_stop(ctx);
     return 0;
