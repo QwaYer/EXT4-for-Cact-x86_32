@@ -10,7 +10,7 @@
 
 <p align="center">
   Out-of-tree <strong>ext4</strong> filesystem → <strong><code>ext4.cctk</code></strong> for the Cact filesystem-module loader (<code>fs_mod</code>).<br>
-  Loaded by the kernel at boot before <code>mntfs_init</code>; mounts the root ext4 through <code>fs_mount(dev)</code>.
+  Loaded on demand through <code>fs_mod</code> (via <code>modload</code>); an ext4 volume is mounted through <code>fs_mount(dev)</code>.
 </p>
 
 ---
@@ -51,8 +51,8 @@ The kernel calls two exported symbols:
 
 ```c
 vfs_node_t *fs_mount(struct blkdev *dev);   // mount device `dev`, return root node or NULL
-int         fs_unmount(void);          // teardown (currently a no-op)
+int         fs_unmount(void);          // teardown (flushes the page cache)
 ```
 
-Undefined kernel symbols (`kmalloc`, `blkdev_read_sector`, `pc_get_page`, …) are
+Undefined kernel symbols (`kmalloc`, `blkdev_read`, `pc_get_page`, …) are
 resolved at load time via `ksym_resolve()`.
